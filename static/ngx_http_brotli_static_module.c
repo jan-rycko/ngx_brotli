@@ -77,6 +77,8 @@ ngx_module_t ngx_http_brotli_static_module = {
 /* << Module definition*/
 
 static const u_char kContentEncoding[] = "Content-Encoding";
+static /* const */ u_char kAcceptEncodingBis[] = "Accept-Encoding-Bis";
+static /* const */ size_t kAcceptEncodingBisLen = 19;
 static /* const */ char kEncoding[] = "br";
 static const size_t kEncodingLen = 2;
 static /* const */ u_char kSuffix[] = ".br";
@@ -132,10 +134,110 @@ static ngx_int_t check_accept_encoding(ngx_http_request_t* req) {
   return NGX_OK;
 }
 
+static ngx_table_elt_t *
+search_headers_in(ngx_http_request_t *r, u_char *name, size_t len) {
+    ngx_list_part_t            *part;
+    ngx_table_elt_t            *h;
+    ngx_uint_t                  i;
+
+    /*
+    Get the first part of the list. There is usual only one part.
+    */
+    part = &r->headers_in.headers.part;
+    h = part->elts;
+
+    /*
+    Headers list array may consist of more than one part,
+    so loop through all of it
+    */
+    for (i = 0; /* void */ ; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                /* The last part, search is done. */
+                break;
+            }
+
+            part = part->next;
+            h = part->elts;
+            i = 0;
+        }
+
+        /*
+        Just compare the lengths and then the names case insensitively.
+        */
+        if (len != h[i].key.len || ngx_strcasecmp(name, h[i].key.data) != 0) {
+            /* This header doesn't match. */
+            continue;
+        }
+
+        /*
+        Ta-da, we got one!
+        Note, we'v stop the search at the first matched header
+        while more then one header may fit.
+        */
+        return &h[i];
+    }
+
+    /*
+    No headers was found
+    */
+    return NULL;
+}
+
+static ngx_int_t check_accept_encoding_bis(ngx_http_request_t* req) {
+    ngx_table_elt_t* accept_encoding_entry;
+    ngx_str_t* accept_encoding;
+    u_char* cursor;
+    u_char* end;
+    u_char before;
+    u_char after;
+
+    accept_encoding_entry = search_headers_in(req, kAcceptEncodingBis, kAcceptEncodingBisLen);
+    if (accept_encoding_entry == NULL) return NGX_DECLINED;
+    accept_encoding = &accept_encoding_entry->value;
+
+    cursor = accept_encoding->data;
+    end = cursor + accept_encoding->len;
+    while (1) {
+        u_char digit;
+        /* It would be an idiotic idea to rely on compiler to produce performant
+           binary, that is why we just do -1 at every call site. */
+        cursor = ngx_strcasestrn(cursor, kEncoding, kEncodingLen - 1);
+        if (cursor == NULL) return NGX_DECLINED;
+        before = (cursor == accept_encoding->data) ? ' ' : cursor[-1];
+        cursor += kEncodingLen;
+        after = (cursor >= end) ? ' ' : *cursor;
+        if (before != ',' && before != ' ') continue;
+        if (after != ',' && after != ' ' && after != ';') continue;
+
+        /* Check for ";q=0[.[0[0[0]]]]" */
+        while (*cursor == ' ') cursor++;
+        if (*(cursor++) != ';') break;
+        while (*cursor == ' ') cursor++;
+        if (*(cursor++) != 'q') break;
+        while (*cursor == ' ') cursor++;
+        if (*(cursor++) != '=') break;
+        while (*cursor == ' ') cursor++;
+        if (*(cursor++) != '0') break;
+        if (*(cursor++) != '.') return NGX_DECLINED; /* ;q=0, */
+        digit = *(cursor++);
+        if (digit < '0' || digit > '9') return NGX_DECLINED; /* ;q=0., */
+        if (digit > '0') break;
+        digit = *(cursor++);
+        if (digit < '0' || digit > '9') return NGX_DECLINED; /* ;q=0.0, */
+        if (digit > '0') break;
+        digit = *(cursor++);
+        if (digit < '0' || digit > '9') return NGX_DECLINED; /* ;q=0.00, */
+        if (digit > '0') break;
+        return NGX_DECLINED; /* ;q=0.000 */
+    }
+    return NGX_OK;
+}
+
 /* Test if this request is allowed to have the brotli response. */
 static ngx_int_t check_eligility(ngx_http_request_t* req) {
   if (req != req->main) return NGX_DECLINED;
-  if (check_accept_encoding(req) != NGX_OK) return NGX_DECLINED;
+  if (check_accept_encoding(req) != NGX_OK && check_accept_encoding_bis(req) != NGX_OK) return NGX_DECLINED;
   req->gzip_tested = 1;
   req->gzip_ok = 0;
   return NGX_OK;
