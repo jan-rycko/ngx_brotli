@@ -237,7 +237,7 @@ static ngx_int_t check_accept_encoding_bis(ngx_http_request_t* req) {
 /* Test if this request is allowed to have the brotli response. */
 static ngx_int_t check_eligility(ngx_http_request_t* req) {
   if (req != req->main) return NGX_DECLINED;
-  if (check_accept_encoding(req) != NGX_OK && check_accept_encoding_bis(req) != NGX_OK) return NGX_DECLINED;
+  if ((check_accept_encoding(req) != NGX_OK) && (check_accept_encoding_bis(req) != NGX_OK)) return NGX_DECLINED;
   req->gzip_tested = 1;
   req->gzip_ok = 0;
   return NGX_OK;
